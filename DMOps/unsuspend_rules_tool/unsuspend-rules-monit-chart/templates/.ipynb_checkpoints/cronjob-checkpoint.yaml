@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-unsuspend-rules-1d
+spec:
+  schedule: "0 11 1 * *"
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: {{ include "unsuspend-rules-monit-chart.name" . }}-svc
+        spec:
+          volumes:
+          - name: {{ include "unsuspend-rules-monit-chart.name" . }}-secrets
+            secret:
+              secretName: {{ include "unsuspend-rules-monit-chart.name" . }}-secrets
+          containers:
+            - name: {{ .Release.Name }}-unsuspend-rules-1d
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              volumeMounts:
+                - name: {{ include "unsuspend-rules-monit-chart.name" . }}-secrets
+                  mountPath: /etc/secrets/
+              env:
+                - name: KERBEROS_ACC
+                  value: {{ .Values.cronjobSettings.creds.kerberos.account }}
+                - name: DRIVERPORT
+                  value: "{{ (index .Values.service.ports 0).nodePort }}"
+                - name: BMPORT
+                  value: "{{ (index .Values.service.ports 1).nodePort }}"
+                - name: K8SHOST
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+              ports:
+                - name: driverport # spark.driver.port
+                  containerPort: {{ (index .Values.service.ports 0).nodePort | int }}
+                - name: bmport # spark.driver.blockManager.port
+                  containerPort: {{ (index .Values.service.ports 1).nodePort | int }}
+              command: ["sleep", "1000000000"]
+              #command: ["/unsuspend_tool/submit_suspended_rules_preparer.sh"]
+          restartPolicy: Never
