@@ -83,7 +83,6 @@ def main():
         .toPandas().to_csv("no_sources_suspended_files.csv", index=False)
 
     # Further filtering and export for no source error and write exclusions
-    df_locks.filter(col("ERROR").contains("NO_SOURCES")).select("LOCK_RULE_ID").distinct().toPandas().to_csv("no_sources_suspended_rules.txt", index=False, header=False)
     df_locks.filter(col('ERROR') == 'RSE excluded; not available for writing.\nDetails: RSE excluded; not available for writing.')\
         .select(["LOCK_RULE_ID", "RSE"]).distinct().toPandas().to_csv("writing_excluded_sites_suspended_rules.csv", index=False)
 

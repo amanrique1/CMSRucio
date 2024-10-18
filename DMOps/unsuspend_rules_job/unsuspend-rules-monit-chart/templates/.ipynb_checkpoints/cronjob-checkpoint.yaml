@@ -17,6 +17,10 @@ spec:
           - name: {{ include "unsuspend-rules-monit-chart.name" . }}-secrets
             secret:
               secretName: {{ include "unsuspend-rules-monit-chart.name" . }}-secrets
+          - name: cvmfs-pvc
+            persistentVolumeClaim:
+              claimName: csi-cvmfs-grid-pvc
+              readOnly: true
           containers:
             - name: {{ .Release.Name }}-unsuspend-rules-1d
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

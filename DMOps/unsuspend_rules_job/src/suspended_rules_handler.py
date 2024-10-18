@@ -1,4 +1,5 @@
 import os
+import shutil
 import asyncio
 import aiofiles
 import logging
@@ -27,31 +28,56 @@ class RucioClientPool:
 
 def init_proxy():
     """
-    Validate the existence and names the two PEM files in the /secrets/ directory and init proxy with them.
+    Validate the existence and names of the two PEM files in the /secrets/ directory,
+    copy them to the current directory, set read permissions (400),
+    and init proxy with the copied files.
     """
-    #Validate certs
-    certs = glob('/secrets/*.pem')
+    # Validate certs
+    certs = glob('/etc/secrets/*.pem')
     if len(certs) != 2:
         raise ValueError('Only two pem files are expected')
-    count = 0
+
     cert = ""
     key = ""
     for file in certs:
-        if ("cert" in file) or ("key" in file):
-            subprocess.run(['chmod', '400', file], check=True, capture_output=True, text=True)
-            count += 1
-            if "cert" in file:
-                cert = file
-            else:
-                key = file
-    if count != 2:
-        raise ValueError('cert and key files are expected')
+        if "cert" in file:
+            cert = file
+        elif "key" in file:
+            key = file
+
+    if not cert or not key:
+        raise ValueError('Both cert and key files are expected')
+
     if 'userkey.pem' in certs and 'usercert.pem' in certs:
         raise ValueError('Only usercert.pem and userkey.pem are expected')
 
-    result = subprocess.run(['voms-proxy-init', '-voms', 'cms', '-rfc', '-valid', '192:00', '--cert', cert, '--key', key], check=True, capture_output=True, text=True)
-    if result.returncode == 1:
+    # Copy files to current directory
+    current_dir = os.getcwd()
+    new_cert = os.path.join(current_dir, 'usercert.pem')
+    new_key = os.path.join(current_dir, 'userkey.pem')
+
+    shutil.copy2(cert, new_cert)
+    shutil.copy2(key, new_key)
+
+    # Set read permissions (400) for both files
+    os.chmod(new_cert, 0o400)
+    os.chmod(new_key, 0o400)
+
+    # Run voms-proxy-init with copied files
+    result = subprocess.run([
+        'voms-proxy-init',
+        '-voms', 'cms',
+        '-rfc',
+        '-valid', '192:00',
+        '--cert', new_cert,
+        '--key', new_key
+    ], check=True, capture_output=True, text=True)
+
+    if result.returncode != 0:
         raise ValueError(result.stderr)
+
+    os.remove(new_cert)
+    os.remove(new_key)
 
 async def stuck_rule_task(client_pool, rule, reason, dry_run):
     """
@@ -75,7 +101,7 @@ async def stuck_rule_task(client_pool, rule, reason, dry_run):
     except Exception as e:
         logging.error("Error set rule to stuck %s: %s" % (rule, e))
 
-async def stuck_rucio_rules(file_path,dry_run=False):
+async def all_locks_ok_handler(file_path,dry_run=False):
     tasks = []
     client_pool = RucioClientPool(size=10)
     reason = "Unsuspend tool: no pending locks, suspended rule to be re-evaluated"
@@ -109,15 +135,18 @@ async def declare_bad_replica_task(client_pool, replicas, reason, dry_run):
     except Exception as e:
         logging.error("Error declaring bad replicas %s: %s" % (replicas, e))
 
-async def declare_bad_replicas(file_path,dry_run=False):
-    tasks = []
+async def no_sources_handler(file_path,dry_run=False):
+    bad_rep_tasks = []
+    stuck_rules_tasks = []
     client_pool = RucioClientPool(size=10)
     reason = "Unsuspend tool: no sources error, unexistent available replica"
     df = pd.read_csv(file_path)
-    df.columns = ["name","rse"]
+    df.columns = ["name","rse","rule_id"]
     df["scope"] = "cms"
     chunk_size = 100
     num_chunks = (len(df) + chunk_size - 1) // chunk_size
+    rule_ids = df["rule_id"].unique()
+    df = df.drop(columns=["rule_id"])
 
     # Iterate over the chunks
     for i in range(num_chunks):
@@ -129,9 +158,14 @@ async def declare_bad_replicas(file_path,dry_run=False):
         # Convert the chunk to a list of dictionaries
         chunk_dict_list = chunk.to_dict('records')
         task = asyncio.create_task(declare_bad_replica_task(client_pool,chunk_dict_list, reason, dry_run))
-        tasks.append(task)
+        bad_rep_tasks.append(task)
+    await asyncio.gather(*bad_rep_tasks)
 
-    await asyncio.gather(*tasks)
+    for id in rule_ids:
+        task = asyncio.create_task(stuck_rule_task(client_pool,id, reason, dry_run))
+        stuck_rules_tasks.append(task)
+
+    await asyncio.gather(*stuck_rules_tasks)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -140,23 +174,20 @@ if __name__ == "__main__":
     dry_run = args.dry_run
 
     loop = asyncio.get_event_loop()
-
     logging.info('-----------------------------------Spark job-----------------------------------')
     logging.info("Starting suspended rules job")
-    result = subprocess.run(['./submit_suspended_rules_preparer.sh'], check=True, capture_output=True, text=True)
+    result = subprocess.run(['/unsuspend_tool/submit_suspended_rules_preparer.sh'], check=True, capture_output=True, text=True)
     if result.returncode != 0:
         logging.error("Error analyzing suspended rules: "+result.stderr)
         raise ValueError(result.stderr)
-    logging.info('-----------------------------------All Locks OK-----------------------------------')
+    logging.info('-----------------------------------All Locks OK Handler-----------------------------------')
 
     logging.info('Stucking suspended rules')
     init_proxy()
-    loop.run_until_complete(stuck_rucio_rules('ok_suspended_rules.txt', dry_run=dry_run))
-    logging.info('-----------------------------------No Sources Error-----------------------------------')
+    loop.run_until_complete(all_locks_ok_handler('ok_suspended_rules.txt', dry_run=dry_run))
+    logging.info('-----------------------------------No Sources Error Handler-----------------------------------')
 
     logging.info('Declaring bad replicas')
-    loop.run_until_complete(declare_bad_replicas('no_sources_suspended_files.csv', dry_run=dry_run))
+    loop.run_until_complete(no_sources_handler('no_sources_suspended_files.csv', dry_run=dry_run))
 
-    logging.info('Stucking rules to be re-evaluated')
-    loop.run_until_complete(stuck_rucio_rules('no_sources_suspended_rules.txt', dry_run=dry_run))
     logging.info('-----------------------------------------------------------------------')
