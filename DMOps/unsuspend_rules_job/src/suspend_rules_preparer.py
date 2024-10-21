@@ -1,8 +1,9 @@
 import click as click
 from CMSSpark.spark_utils import get_spark_session
-from pyspark.sql.functions import col, lit, lower, when, from_unixtime, to_date, hex as _hex
+from pyspark.sql.functions import col, lit, lower, when, from_unixtime, to_date, hex as _hex, collect_list, concat_ws
 from pyspark.storagelevel import StorageLevel
 from datetime import datetime, timedelta
+from pyspark.sql.window import Window
 
 @click.command()
 def main():
@@ -79,8 +80,12 @@ def main():
     df_no_sources_locks = df_no_sources_locks_rep.select("LOCK_NAME").distinct().subtract(df_locks_av)
 
     # Join to get files without valid replicas and export
-    df_no_sources_locks.join(df_no_sources_locks_rep, "LOCK_NAME").select("LOCK_NAME", "RSE", "LOCK_RULE_ID").distinct()\
-        .toPandas().to_csv("no_sources_suspended_files.csv", index=False)
+    windowSpec = Window.partitionBy('LOCK_NAME')
+    df_no_sources_locks_rep = df_no_sources_locks.join(df_no_sources_locks_rep, "LOCK_NAME").select("LOCK_NAME", "RSE", "LOCK_RULE_ID").distinct()
+    df_no_sources_locks_rep.withColumn("RSES", collect_list(col("RSE")).over(windowSpec)) \
+        .select(['LOCK_NAME','RSES']).withColumn("RSES", concat_ws(";", "RSES")).distinct().toPandas().to_csv('no_sources_suspended_replicas.csv',index=False)
+    df_no_sources_locks_rep.select("LOCK_RULE_ID").distinct()\
+        .toPandas().to_csv("no_sources_suspended_rules.txt", index=False, header=False)
 
     # Further filtering and export for no source error and write exclusions
     df_locks.filter(col('ERROR') == 'RSE excluded; not available for writing.\nDetails: RSE excluded; not available for writing.')\

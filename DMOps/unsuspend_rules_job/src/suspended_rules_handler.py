@@ -135,41 +135,48 @@ async def declare_bad_replica_task(client_pool, replicas, reason, dry_run):
     except Exception as e:
         logging.error("Error declaring bad replicas %s: %s" % (replicas, e))
 
-async def no_sources_handler(file_path,dry_run=False):
+async def no_sources_handler(replicas_path,rules_path,dry_run=False):
     bad_rep_tasks = []
     stuck_rules_tasks = []
     client_pool = RucioClientPool(size=10)
     reason = "Unsuspend tool: no sources error, unexistent available replica"
-    df = pd.read_csv(file_path)
-    df.columns = ["name","rse","rule_id"]
-    df["scope"] = "cms"
+    df_replicas = pd.read_csv(replicas_path)
+    df_replicas.columns = ["name","rses"]
+    df_replicas["scope"] = "cms"
     chunk_size = 100
-    num_chunks = (len(df) + chunk_size - 1) // chunk_size
-    rule_ids = df["rule_id"].unique()
-    df = df.drop(columns=["rule_id"])
+    num_chunks = (len(df_replicas) + chunk_size - 1) // chunk_size
+    rule_ids = []
+    with open(rules_path) as f:
+        rule_ids = f.read().splitlines()
 
     # Iterate over the chunks
     for i in range(num_chunks):
         # Get the chunk
         start = i * chunk_size
-        end = min((i + 1) * chunk_size, len(df))
-        chunk = df.iloc[start:end]
+        end = min((i + 1) * chunk_size, len(df_replicas))
+        chunk = df_replicas.iloc[start:end]
+        chunk_dict_list = []
 
         # Convert the chunk to a list of dictionaries
-        chunk_dict_list = chunk.to_dict('records')
+        for record in chunk.to_numpy():
+            name = record[0]
+            rses = record[1].split(";")
+            scope = record[2]
+            for rse in rses:
+                chunk_dict_list.append({'scope': scope, 'name': name, 'rse': rse})
         task = asyncio.create_task(declare_bad_replica_task(client_pool,chunk_dict_list, reason, dry_run))
         bad_rep_tasks.append(task)
     await asyncio.gather(*bad_rep_tasks)
 
     for id in rule_ids:
-        task = asyncio.create_task(stuck_rule_task(client_pool,id, reason, dry_run))
+        task = asyncio.create_task(stuck_rule_task(client_pool,id.strip(), reason, dry_run))
         stuck_rules_tasks.append(task)
 
     await asyncio.gather(*stuck_rules_tasks)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dry_run', '-d', action='store_true', help='Perform a dry run')
+    parser.add_argument('--dry-run', '-d', action='store_true', help='Perform a dry run')
     args = parser.parse_args()
     dry_run = args.dry_run
 
@@ -188,6 +195,6 @@ if __name__ == "__main__":
     logging.info('-----------------------------------No Sources Error Handler-----------------------------------')
 
     logging.info('Declaring bad replicas')
-    loop.run_until_complete(no_sources_handler('no_sources_suspended_files.csv', dry_run=dry_run))
+    loop.run_until_complete(no_sources_handler('no_sources_suspended_replicas.csv','no_sources_suspended_rules.txt', dry_run=dry_run))
 
     logging.info('-----------------------------------------------------------------------')
