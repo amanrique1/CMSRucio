@@ -44,6 +44,5 @@ spec:
                   containerPort: {{ (index .Values.service.ports 0).nodePort | int }}
                 - name: bmport # spark.driver.blockManager.port
                   containerPort: {{ (index .Values.service.ports 1).nodePort | int }}
-              command: ["sleep", "1000000000"]
-              #command: ["/unsuspend_tool/submit_suspended_rules_preparer.sh"]
+              command: ["/unsuspend_tool/submit_suspended_rules_preparer.sh"]
           restartPolicy: Never
