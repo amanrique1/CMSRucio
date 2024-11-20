@@ -1,0 +1,20 @@
+# Base image with spark-submit capabilities, CMSMonitoring, CMSSpark and CERN central tools
+FROM registry.cern.ch/cmsmonitoring/cmsmon-spark:v0.5.0.1
+
+# Set environment variables
+ENV USER=dmtops \
+    RUCIO_CONFIG=/data/rucio.cfg \
+    RUCIO_ACCOUNT=transfer_ops
+
+# Install dependencies for Rucio, DBS and Gfal
+RUN dnf install -y ca-policy-egi-core \
+    && pip3 install rucio-clients aiofiles
+
+# Copy source code to the image
+COPY ./src /unsuspend_tool
+
+# Copy source code to the image
+COPY rucio.cfg /data/rucio.cfg
+
+# Give execution permissions
+RUN chmod +x /unsuspend_tool/submit_suspended_rules_preparer.sh
